@@ -299,6 +299,15 @@ pub fn test_against_zk_nullifier_sig_c_and_s() {
 }
 
 #[test]
+fn test_digest_private_wraps_values_above_modulus() {
+    let digest =
+        hex::decode("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142").unwrap();
+    let scalar = secp256k1::Fr::from_be_bytes_mod_order(&digest);
+
+    assert_eq!(scalar.into_bigint(), BigInt!("0x1"));
+}
+
+#[test]
 fn test_point_sec1_encoding() {
     let vectors = test_vectors::encoding_test_vectors();
 

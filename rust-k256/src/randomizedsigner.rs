@@ -4,12 +4,14 @@ use super::{
 };
 use k256::{
     elliptic_curve::{
+        bigint::ArrayEncoding,
         hash2curve::{ExpandMsgXmd, GroupDigest},
+        ops::Reduce,
         point::NonIdentity,
         sec1::ToEncodedPoint,
     },
     sha2::{Digest, Sha256},
-    Secp256k1,
+    FieldBytes, Scalar, Secp256k1, U256,
 };
 // Removed `pub` from this, since it's only interested to those who already imported `signature`
 use signature::{Error, RandomizedSigner};
@@ -39,6 +41,11 @@ impl<'signing> PlumeSigner<'signing> {
         PlumeSigner { secret_key, v1 }
     }
 }
+
+fn reduce_digest_to_scalar(digest: FieldBytes) -> Scalar {
+    Scalar::reduce(U256::from_be_byte_array(digest))
+}
+
 impl<'signing> RandomizedSigner<PlumeSignature> for PlumeSigner<'signing> {
     fn try_sign_with_rng(
         &self,
@@ -87,8 +94,8 @@ impl<'signing> RandomizedSigner<PlumeSignature> for PlumeSigner<'signing> {
         updhash!(hashed_to_curve_r);
 
         let c = hasher.finalize();
-        let c_scalar = NonZeroScalar::from_repr(c)
-            .expect("it should be impossible to get the hash equal to zero");
+        let c_scalar = NonZeroScalar::new(reduce_digest_to_scalar(c))
+            .expect("it should be impossible to get the reduced hash equal to zero");
 
         // Compute $s = r + sk ⋅ c$. #lastoponsecret
         let s_scalar = NonZeroScalar::new(*r_scalar + *(c_scalar * self.secret_key.to_nonzero_scalar()))
@@ -109,5 +116,29 @@ impl<'signing> RandomizedSigner<PlumeSignature> for PlumeSigner<'signing> {
                 None
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_literal::hex;
+
+    #[test]
+    fn reduce_digest_to_scalar_wraps_values_above_modulus() {
+        let scalar = reduce_digest_to_scalar(
+            hex!("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364142").into(),
+        );
+
+        assert_eq!(scalar, Scalar::from(1u64));
+    }
+
+    #[test]
+    fn reduce_digest_to_scalar_maps_modulus_to_zero() {
+        let scalar = reduce_digest_to_scalar(
+            hex!("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141").into(),
+        );
+
+        assert_eq!(scalar, Scalar::from(0u64));
     }
 }
