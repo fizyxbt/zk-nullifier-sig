@@ -1,7 +1,4 @@
-use super::{
-    CryptoRngCore, NonZeroScalar, PlumeSignature, PlumeSignatureV1Fields, ProjectivePoint,
-    SecretKey, DST,
-};
+use super::{CryptoRngCore, NonZeroScalar, PlumeSignature, PlumeSignatureV1Fields, SecretKey, DST};
 use k256::{
     elliptic_curve::{
         hash2curve::{ExpandMsgXmd, GroupDigest},
@@ -9,7 +6,7 @@ use k256::{
         sec1::ToEncodedPoint,
     },
     sha2::{Digest, Sha256},
-    Secp256k1,
+    ProjectivePoint, Secp256k1,
 };
 // Removed `pub` from this, since it's only interested to those who already imported `signature`
 use signature::{Error, RandomizedSigner};
@@ -35,7 +32,7 @@ pub struct PlumeSigner<'signing> {
 impl<'signing> PlumeSigner<'signing> {
     /// Creates a new `PlumeSigner` instance with the given secret key and signature
     /// variant.
-    pub fn new(secret_key: &SecretKey, v1: bool) -> PlumeSigner {
+    pub fn new(secret_key: &SecretKey, v1: bool) -> PlumeSigner<'_> {
         PlumeSigner { secret_key, v1 }
     }
 }

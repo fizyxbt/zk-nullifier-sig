@@ -18,21 +18,13 @@
 //!     let sig_v1 = PlumeSignature::sign_v1(
 //!         &sk, b"ZK nullifier signature", &mut OsRng
 //!     );
-//!     assert!(sig_v1.verify());
 //!
 //!     let sig_v2 = PlumeSignature::sign_v2(
 //!         &sk, b"ZK nullifier signature", &mut OsRng
 //!     );
-//!     assert!(sig_v2.verify());
 //! # }
 //! ```
 
-use k256::elliptic_curve::bigint::ArrayEncoding;
-use k256::elliptic_curve::ops::Reduce;
-use k256::sha2::{digest::Output, Digest, Sha256}; // requires 'getrandom' feature
-use k256::ProjectivePoint;
-use k256::Scalar;
-use k256::U256;
 use signature::RandomizedSigner;
 
 /// Exports types from the `k256` crate:
@@ -49,9 +41,8 @@ pub use rand_core::CryptoRngCore;
 /// The `Serialize` and `Deserialize` traits from the Serde library are re-exported for convenience.
 pub use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
 mod utils;
-// not published due to use of `Projective...`; these utils can be found in other crates
-use utils::*;
 
 /// Provides the [`RandomizedSigner`] trait implementation over [`PlumeSignature`].
 pub mod randomizedsigner;
@@ -88,62 +79,6 @@ pub struct PlumeSignatureV1Fields {
     pub hashed_to_curve_r: AffinePoint,
 }
 impl PlumeSignature {
-    /// Verifies a PLUME signature.
-    /// Returns `true` if the signature is valid.
-    pub fn verify(&self) -> bool {
-        // Verifier check in SNARK:
-        // g^[r + sk * c] / (g^sk)^c = g^r
-        // hash[m, gsk]^[r + sk * c] / (hash[m, pk]^sk)^c = hash[m, pk]^r
-        // c = hash2(g, g^sk, hash[m, g^sk], hash[m, pk]^sk, gr, hash[m, pk]^r)
-
-        let c_scalar = *self.c;
-
-        let r_point = (ProjectivePoint::GENERATOR * *self.s) - (self.pk * (c_scalar));
-
-        let hashed_to_curve = hash_to_curve(&self.message, &self.pk.into());
-        if hashed_to_curve.is_err() {
-            return false;
-        }
-        let hashed_to_curve = hashed_to_curve.unwrap();
-
-        let hashed_to_curve_r = hashed_to_curve * *self.s - self.nullifier * (c_scalar);
-
-        if let Some(PlumeSignatureV1Fields {
-            r_point: sig_r_point,
-            hashed_to_curve_r: sig_hashed_to_curve_r,
-        }) = self.v1specific
-        {
-            // Check whether g^r equals g^s * pk^{-c}
-            if r_point != sig_r_point {
-                return false;
-            }
-
-            // Check whether h^r equals h^{r + sk * c} * nullifier^{-c}
-            if hashed_to_curve_r != sig_hashed_to_curve_r {
-                return false;
-            }
-
-            // Check if the given hash matches
-            c_scalar
-                == Scalar::reduce(U256::from_be_byte_array(c_sha256_vec_signal(vec![
-                    &ProjectivePoint::GENERATOR,
-                    &self.pk.into(),
-                    &hashed_to_curve,
-                    &self.nullifier.into(),
-                    &r_point,
-                    &hashed_to_curve_r,
-                ])))
-        } else {
-            // Check if the given hash matches
-            c_scalar
-                == Scalar::reduce(U256::from_be_byte_array(c_sha256_vec_signal(vec![
-                    &self.nullifier.into(),
-                    &r_point,
-                    &hashed_to_curve_r,
-                ])))
-        }
-    }
-
     /// Yields the signature with `None` for `v1specific`. Same as using [`RandomizedSigner`] with [`PlumeSigner`];
     /// use it when you don't want to `use` PlumeSigner and the trait in your code.
     pub fn sign_v1(secret_key: &SecretKey, msg: &[u8], rng: &mut impl CryptoRngCore) -> Self {
@@ -156,21 +91,11 @@ impl PlumeSignature {
     }
 }
 
-fn c_sha256_vec_signal(values: Vec<&ProjectivePoint>) -> Output<Sha256> {
-    let preimage_vec = values
-        .into_iter()
-        .map(encode_pt)
-        .collect::<Vec<_>>()
-        .concat();
-    let mut sha256_hasher = Sha256::new();
-    sha256_hasher.update(preimage_vec.as_slice());
-    sha256_hasher.finalize()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::utils::encode_pt;
     use hex_literal::hex;
+    use k256::{ProjectivePoint, Scalar};
 
     // Test encode_pt()
     #[test]

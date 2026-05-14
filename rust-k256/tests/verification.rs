@@ -3,8 +3,17 @@
 //! Their setup is shared, `mod helpers` contains barely not refactored code, which is still instrumental to the tests.
 
 use helpers::{gen_test_scalar_sk, test_gen_signals, PlumeVersion};
-use k256::{elliptic_curve::sec1::ToEncodedPoint, NonZeroScalar, ProjectivePoint};
-use plume_rustcrypto::{AffinePoint, PlumeSignature, PlumeSignatureV1Fields};
+use k256::{
+    elliptic_curve::{
+        bigint::ArrayEncoding,
+        hash2curve::{ExpandMsgXmd, GroupDigest},
+        ops::Reduce,
+        sec1::ToEncodedPoint,
+    },
+    sha2::{digest::Output, Digest, Sha256},
+    NonZeroScalar, ProjectivePoint, Scalar, Secp256k1, U256,
+};
+use plume_rustcrypto::{PlumeSignature, PlumeSignatureV1Fields};
 
 const G: ProjectivePoint = ProjectivePoint::GENERATOR;
 const M: &[u8; 29] = b"An example app message string";
@@ -42,7 +51,7 @@ fn plume_v1_test() {
             hashed_to_curve_r: hashed_to_curve_r.into(),
         }),
     };
-    let verified = sig.verify();
+    let verified = verify_signature(&sig);
     println!("Verified: {}", verified);
 
     // Print nullifier
@@ -95,15 +104,85 @@ fn plume_v1_test() {
 #[test]
 fn plume_v2_test() {
     let test_data = test_gen_signals(M, PlumeVersion::V2);
-    assert!(PlumeSignature {
+    let sig = PlumeSignature {
         message: M.to_owned().into(),
         pk: (G * gen_test_scalar_sk()).into(),
         nullifier: test_data.1.into(),
         c: NonZeroScalar::from_repr(test_data.2).unwrap(),
         s: NonZeroScalar::new(test_data.3).unwrap(),
-        v1specific: None
+        v1specific: None,
+    };
+
+    assert!(verify_signature(&sig));
+}
+
+fn verify_signature(sig: &PlumeSignature) -> bool {
+    let c_scalar = *sig.c;
+
+    let r_point = (ProjectivePoint::GENERATOR * *sig.s) - (sig.pk * c_scalar);
+
+    let hashed_to_curve = match hash_to_curve(&sig.message, &sig.pk.into()) {
+        Ok(point) => point,
+        Err(_) => return false,
+    };
+
+    let hashed_to_curve_r = hashed_to_curve * *sig.s - sig.nullifier * c_scalar;
+
+    if let Some(PlumeSignatureV1Fields {
+        r_point: sig_r_point,
+        hashed_to_curve_r: sig_hashed_to_curve_r,
+    }) = &sig.v1specific
+    {
+        if r_point != *sig_r_point {
+            return false;
+        }
+
+        if hashed_to_curve_r != *sig_hashed_to_curve_r {
+            return false;
+        }
+
+        c_scalar
+            == Scalar::reduce(U256::from_be_byte_array(c_sha256_vec_signal(vec![
+                &ProjectivePoint::GENERATOR,
+                &sig.pk.into(),
+                &hashed_to_curve,
+                &sig.nullifier.into(),
+                &r_point,
+                &hashed_to_curve_r,
+            ])))
+    } else {
+        c_scalar
+            == Scalar::reduce(U256::from_be_byte_array(c_sha256_vec_signal(vec![
+                &sig.nullifier.into(),
+                &r_point,
+                &hashed_to_curve_r,
+            ])))
     }
-    .verify());
+}
+
+fn hash_to_curve(
+    m: &[u8],
+    pk: &ProjectivePoint,
+) -> Result<ProjectivePoint, k256::elliptic_curve::Error> {
+    Secp256k1::hash_from_bytes::<ExpandMsgXmd<Sha256>>(
+        &[[m, &encode_pt(pk)].concat().as_slice()],
+        &[plume_rustcrypto::DST],
+    )
+}
+
+fn encode_pt(point: &ProjectivePoint) -> Vec<u8> {
+    point.to_encoded_point(true).to_bytes().to_vec()
+}
+
+fn c_sha256_vec_signal(values: Vec<&ProjectivePoint>) -> Output<Sha256> {
+    let preimage_vec = values
+        .into_iter()
+        .map(encode_pt)
+        .collect::<Vec<_>>()
+        .concat();
+    let mut sha256_hasher = Sha256::new();
+    sha256_hasher.update(preimage_vec.as_slice());
+    sha256_hasher.finalize()
 }
 
 mod helpers {
@@ -113,13 +192,11 @@ mod helpers {
     use hex_literal::hex;
     use k256::{
         elliptic_curve::{
-            bigint::ArrayEncoding,
             hash2curve::{ExpandMsgXmd, GroupDigest},
-            ops::ReduceNonZero,
             PrimeField,
         },
         sha2::{digest::Output, Digest, Sha256},
-        Scalar, Secp256k1, U256,
+        Scalar, Secp256k1,
     };
 
     #[derive(Debug)]
